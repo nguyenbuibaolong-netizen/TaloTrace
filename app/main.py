@@ -5,9 +5,18 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Response, status
+from fastapi.responses import FileResponse
 
+from app.artifacts import ArtifactValidator, LocalArtifactStore
 from app.content import UnsupportedConceptError
-from app.generation import UnavailableVideoGenerator, VideoGenerator
+from app.generation import (
+    FFmpegComposer,
+    GenerationPipeline,
+    OpenAILessonPlanner,
+    OpenAITTS,
+    PillowSceneRenderer,
+    VideoGenerator,
+)
 from app.jobs import InMemoryJobRepository, JobNotFoundError, JobService
 from app.models import JobStatus, VideoCreateRequest, VideoJob
 
@@ -16,9 +25,20 @@ def create_app(
     *,
     generator: VideoGenerator | None = None,
     repository: InMemoryJobRepository | None = None,
+    artifact_store: LocalArtifactStore | None = None,
 ) -> FastAPI:
     repository = repository or InMemoryJobRepository()
-    service = JobService(repository, generator or UnavailableVideoGenerator())
+    artifact_store = artifact_store or LocalArtifactStore()
+    if generator is None:
+        generator = GenerationPipeline(
+            planner=OpenAILessonPlanner(),
+            renderer=PillowSceneRenderer(),
+            narrator=OpenAITTS(),
+            composer=FFmpegComposer(),
+            validator=ArtifactValidator(),
+            artifacts=artifact_store,
+        )
+    service = JobService(repository, generator)
 
     application = FastAPI(
         title="Growtrics Chemistry Video Service",
@@ -26,6 +46,7 @@ def create_app(
     )
     application.state.job_repository = repository
     application.state.job_service = service
+    application.state.artifact_store = artifact_store
 
     def get_job_or_404(job_id: UUID) -> VideoJob:
         try:
@@ -66,8 +87,8 @@ def create_app(
     def get_video(job_id: UUID) -> VideoJob:
         return get_job_or_404(job_id)
 
-    @application.get("/videos/{job_id}/artifact")
-    def get_video_artifact(job_id: UUID) -> None:
+    @application.get("/videos/{job_id}/artifact", response_class=FileResponse)
+    def get_video_artifact(job_id: UUID) -> FileResponse:
         job = get_job_or_404(job_id)
         if job.status is not JobStatus.COMPLETED:
             raise HTTPException(
@@ -77,9 +98,17 @@ def create_app(
                     "status": job.status,
                 },
             )
-        raise HTTPException(
-            status_code=501,
-            detail="Completed artifact retrieval is implemented in the media slice.",
+        artifact = artifact_store.get(job_id)
+        if artifact is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Completed video artifact is missing.",
+            )
+        return FileResponse(
+            artifact,
+            media_type="video/mp4",
+            filename=f"{job.concept_id.value}.mp4",
+            content_disposition_type="inline",
         )
 
     return application
