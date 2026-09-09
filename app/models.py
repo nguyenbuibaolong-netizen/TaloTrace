@@ -7,7 +7,7 @@ from enum import StrEnum
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 NonEmptyText = Annotated[str, Field(min_length=1)]
@@ -66,6 +66,20 @@ class LessonScene(StrictModel):
         default=(), max_length=3
     )
 
+    @field_validator("narration")
+    @classmethod
+    def narration_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("narration must not be blank")
+        return value
+
+    @field_validator("labels", "emphasis")
+    @classmethod
+    def text_items_must_not_be_blank(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not value.strip() for value in values):
+            raise ValueError("labels and emphasis must not contain blank text")
+        return values
+
     @model_validator(mode="after")
     def emphasis_references_labels(self) -> LessonScene:
         unknown = set(self.emphasis) - set(self.labels)
@@ -77,6 +91,13 @@ class LessonScene(StrictModel):
 class LessonPlan(StrictModel):
     title: str = Field(min_length=1, max_length=80)
     scenes: tuple[LessonScene, ...] = Field(min_length=3, max_length=5)
+
+    @field_validator("title")
+    @classmethod
+    def title_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("title must not be blank")
+        return value
 
 
 class ConceptSpec(StrictModel):
@@ -128,7 +149,7 @@ class GenerationMetrics(StrictModel):
     planner_retries: int = Field(default=0, ge=0)
     planner_input_tokens: int | None = Field(default=None, ge=0)
     planner_output_tokens: int | None = Field(default=None, ge=0)
-    used_canonical_fallback: bool = False
+    fallback_used: bool = False
     tts_model: str | None = None
     tts_requests: int = Field(default=0, ge=0)
     tts_retries: int = Field(default=0, ge=0)
